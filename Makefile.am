@@ -460,6 +460,12 @@ src_libdrivers_la_SOURCES += \
 	src/hardware/openbench-logic-sniffer/protocol.c \
 	src/hardware/openbench-logic-sniffer/api.c
 endif
+if HW_OWON_VDS_TINY
+src_libdrivers_la_SOURCES += \
+	src/hardware/owon-vds-tiny/protocol.h \
+	src/hardware/owon-vds-tiny/protocol.c \
+	src/hardware/owon-vds-tiny/api.c
+endif
 if HW_PCE_322A
 src_libdrivers_la_SOURCES += \
 	src/hardware/pce-322a/protocol.h \
