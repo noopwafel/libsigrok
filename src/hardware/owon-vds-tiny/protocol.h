@@ -31,6 +31,12 @@
 #define VDS_EP_IN 0x81
 #define VDS_EP_OUT 0x03
 
+enum calibrationtypes {
+	GAIN = 0,
+	AMPLITUDE = 1,
+	COMPENSATION = 2
+};
+
 enum states {
 	IDLE,
 	NEW_CAPTURE,
@@ -50,6 +56,8 @@ struct vds_profile {
 struct dev_context {
 	const struct vds_profile *profile;
 	int dev_state;
+	uint16_t calibration_data[3][2][10];
+	int voltage[2];
 };
 
 SR_PRIV int vds_open(struct sr_dev_inst *sdi);

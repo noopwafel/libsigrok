@@ -20,6 +20,8 @@
 #include <config.h>
 #include "protocol.h"
 
+#define DEFAULT_VOLTAGE 5 // 200mV
+
 static const uint32_t scanopts[] = {
 	SR_CONF_CONN,
 };
@@ -30,6 +32,23 @@ static const uint32_t drvopts[] = {
 
 static const uint32_t devopts[] = {
 	SR_CONF_CONTINUOUS,
+/*	SR_CONF_CONN | SR_CONF_GET,
+	SR_CONF_LIMIT_FRAMES | SR_CONF_SET,
+	SR_CONF_TIMEBASE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_NUM_HDIV | SR_CONF_GET,
+	SR_CONF_CAPTURE_RATIO | SR_CONF_GET | SR_CONF_SET,
+	SR_CONF_TRIGGER_SOURCE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_TRIGGER_SLOPE | SR_CONF_GET | SR_CONF_SET,
+	SR_CONF_BUFFERSIZE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_SAMPLERATE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,*/
+	SR_CONF_NUM_VDIV | SR_CONF_GET,
+/*	SR_CONF_TRIGGER_LEVEL | SR_CONF_GET | SR_CONF_SET,*/
+};
+
+static const uint32_t devopts_cg[] = {
+	SR_CONF_VDIV | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+/*	SR_CONF_COUPLING | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_FILTER | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,*/
 };
 
 static const char *channel_names[] = {
@@ -39,6 +58,21 @@ static const char *channel_names[] = {
 static const struct vds_profile dev_profiles[] = {
 	{ 0x5345, 0x1234, 0x1, "Owon", "VDS1022" },
 	ALL_ZERO
+};
+
+static const uint64_t vdivs[][2] = {
+	/* millivolts */
+	{ 5, 1000 },
+	{ 10, 1000 },
+	{ 20, 1000 },
+	{ 50, 1000 },
+	{ 100, 1000 },
+	{ 200, 1000 },
+	{ 500, 1000 },
+	/* volts */
+	{ 1, 1 },
+	{ 2, 1 },
+	{ 5, 1 },
 };
 
 static struct sr_dev_inst *vds_dev_new(const struct vds_profile *prof)
@@ -72,10 +106,10 @@ static struct sr_dev_inst *vds_dev_new(const struct vds_profile *prof)
 	devc->timebase = DEFAULT_TIMEBASE;
 	devc->samplerate = DEFAULT_SAMPLERATE;
 	devc->ch_enabled[0] = TRUE;
-	devc->ch_enabled[1] = TRUE;
+	devc->ch_enabled[1] = TRUE;*/
 	devc->voltage[0] = DEFAULT_VOLTAGE;
 	devc->voltage[1] = DEFAULT_VOLTAGE;
-	devc->coupling[0] = DEFAULT_COUPLING;
+/*	devc->coupling[0] = DEFAULT_COUPLING;
 	devc->coupling[1] = DEFAULT_COUPLING;
 	devc->voffset_ch1 = DEFAULT_VERT_OFFSET;
 	devc->voffset_ch2 = DEFAULT_VERT_OFFSET;
@@ -206,61 +240,95 @@ static int dev_close(struct sr_dev_inst *sdi)
 static int config_get(uint32_t key, GVariant **data,
 	const struct sr_dev_inst *sdi, const struct sr_channel_group *cg)
 {
-	int ret;
+	int ch_idx;
+	struct dev_context *devc;
+	const uint64_t *vdiv;
 
-	(void)sdi;
-	(void)data;
-	(void)cg;
-
-	ret = SR_OK;
 	switch (key) {
-	/* TODO */
-	default:
-		return SR_ERR_NA;
+	case SR_CONF_NUM_VDIV:
+		*data = g_variant_new_int32(ARRAY_SIZE(vdivs));
+		return SR_OK;
 	}
 
-	return ret;
+	if (!sdi)
+		return SR_ERR_ARG;
+
+	devc = sdi->priv;
+
+	if (cg) {
+		if (sdi->channel_groups->data == cg)
+			ch_idx = 0;
+		else if (sdi->channel_groups->next->data == cg)
+			ch_idx = 1;
+		else
+			return SR_ERR_ARG;
+
+		switch (key) {
+		case SR_CONF_VDIV:
+			vdiv = vdivs[devc->voltage[ch_idx]];
+			*data = g_variant_new("(tt)", vdiv[0], vdiv[1]);
+			return SR_OK;
+		}
+	} else {
+		switch (key) {
+		}
+	}
+
+	return SR_ERR_ARG;
 }
 
 static int config_set(uint32_t key, GVariant *data,
 	const struct sr_dev_inst *sdi, const struct sr_channel_group *cg)
 {
-	int ret;
+	struct dev_context *devc = sdi->priv;
+	int ch_idx, idx;
 
-	(void)sdi;
 	(void)data;
-	(void)cg;
 
-	ret = SR_OK;
-	switch (key) {
-	/* TODO */
-	default:
-		ret = SR_ERR_NA;
+	if (!cg) {
+		switch (key) {
+		}
+	} else {
+		if (sdi->channel_groups->data == cg)
+			ch_idx = 0;
+		else if (sdi->channel_groups->next->data == cg)
+			ch_idx = 1;
+		else
+			return SR_ERR_ARG;
+
+		switch (key) {
+		case SR_CONF_VDIV:
+			if ((idx = std_u64_tuple_idx(data, ARRAY_AND_SIZE(vdivs))) < 0)
+				return SR_ERR_ARG;
+			devc->voltage[ch_idx] = idx;
+			return SR_OK;
+		}
 	}
 
-	return ret;
+	return SR_ERR_NA;
 }
 
 static int config_list(uint32_t key, GVariant **data,
 	const struct sr_dev_inst *sdi, const struct sr_channel_group *cg)
 {
-	int ret;
-
-	(void)sdi;
-	(void)data;
-	(void)cg;
-
-	ret = SR_OK;
-	switch (key) {
-	case SR_CONF_SCAN_OPTIONS:
-	case SR_CONF_DEVICE_OPTIONS:
-		return STD_CONFIG_LIST(key, data, sdi, cg, scanopts, drvopts, devopts);
-	/* TODO */
-	default:
-		return SR_ERR_NA;
+	if (!cg) {
+		switch (key) {
+		case SR_CONF_SCAN_OPTIONS:
+		case SR_CONF_DEVICE_OPTIONS:
+			return STD_CONFIG_LIST(key, data, sdi, cg, scanopts, drvopts, devopts);
+		}
+	} else {
+		switch (key) {
+		case SR_CONF_DEVICE_OPTIONS:
+			*data = std_gvar_array_u32(ARRAY_AND_SIZE(devopts_cg));
+			return SR_OK;
+		case SR_CONF_VDIV:
+			*data = std_gvar_tuple_array(ARRAY_AND_SIZE(vdivs));
+			return SR_OK;
+		}
 	}
 
-	return ret;
+	return SR_ERR_NA;
 }
 
 static void hexdump(uint8_t *buffer, int buflen) {
@@ -305,7 +373,7 @@ static void LIBUSB_CALL receive_transfer(struct libusb_transfer *transfer)
 		sr_err("invalid channel %d", channel);
 		return;
 	}
-	num_samples = 5100;
+	num_samples = (5000 - 2) + 50 + 50;
 
 	//struct sr_datafeed_packet packet;
 	struct sr_datafeed_analog analog;
@@ -329,7 +397,11 @@ static void LIBUSB_CALL receive_transfer(struct libusb_transfer *transfer)
 	//analog.meaning->channels = g_slist_append(NULL, channels->data);
 	analog.meaning->channels = g_slist_append(NULL, g_slist_nth_data(sdi->channels, channel));
 
-	uint8_t *data_in = transfer->buffer + 11 + 100;
+	// the layout is [11 bytes header] + [100 bytes trigger buffer] + [50 bytes pre] + [1000 bytes payload] + [50 bytes post]
+	// the pre/payload/post seems to all be valid data
+	// owon use only the payload, offset by 1 point, looks like they're trying to avoid some problem when triggering on square waves (sometimes you get a bad sample (or even two) at the start of the pre), idk
+
+	uint8_t *data_in = transfer->buffer + 11 + 100 + 1;
 	for (int i = 0; i < num_samples; i++) {
 		//((float *)analog.data)[i] = range / 255 * *(data_in + i) - range / 2;
 		((float *)analog.data)[i] = *(data_in + i);

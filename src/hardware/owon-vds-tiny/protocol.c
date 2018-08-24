@@ -22,10 +22,14 @@
 
 #define VDS_USB_TIMEOUT 200
 
+// #define VDS_DUMP_OUTPUT
+
+#ifdef VDS_DUMP_OUTPUT
 static void hexdump(uint8_t *buffer, int buflen) {
 	for (int i = 0; i < buflen; ++i)
 		printf("%02x ", buffer[i]);
 }
+#endif
 
 static void make_int32(uint8_t *buffer, uint32_t val) {
 	buffer[0] = val & 0xff;
@@ -46,9 +50,12 @@ static int send_bulkcmd(const struct sr_dev_inst *sdi, uint8_t *buffer, int bufl
 
 	usb = sdi->conn;
 
+#ifdef VDS_DUMP_OUTPUT
 	printf("out: ");
 	hexdump(buffer, buflen);
 	printf("\n");
+#endif
+
 	if ((ret = libusb_bulk_transfer(usb->devhdl, VDS_EP_OUT, buffer, buflen, &tmp, VDS_USB_TIMEOUT)) != 0)
 		return SR_ERR;
 
@@ -64,9 +71,12 @@ static int recv_bulkcmd(const struct sr_dev_inst *sdi, uint8_t *buffer, int bufl
 
 	if ((ret = libusb_bulk_transfer(usb->devhdl, VDS_EP_IN, buffer, buflen, &tmp, VDS_USB_TIMEOUT)) != 0)
 		return SR_ERR;
+
+#ifdef VDS_DUMP_OUTPUT
 	printf("in: ");
 	hexdump(buffer, buflen);
 	printf("\n");
+#endif
 
 	return SR_OK;
 }
@@ -119,7 +129,7 @@ static int vds_upload_firmware(struct sr_dev_inst *sdi)
 {
 	struct drv_context *drvc = sdi->driver->context;
 	struct sr_usb_dev_inst *usb = sdi->conn;
-	const char *firmware;
+	char *firmware;
 	size_t fw_length;
 	int err = SR_OK;
 	uint8_t buffer[64];
@@ -127,7 +137,8 @@ static int vds_upload_firmware(struct sr_dev_inst *sdi)
 	uint32_t response;
 	uint32_t buffersize;
 	uint32_t pos, length;
-	int i, tmp;
+	unsigned int i;
+	int tmp;
 
 	firmware = sr_resource_load(drvc->sr_ctx, SR_RESOURCE_FIRMWARE, "VDS1022_FPGA_V3.5.bin", &fw_length, 0x100000);
 	if (!firmware)
@@ -179,6 +190,37 @@ done:
 	return err;
 }
 
+static int vds_parse_flash(struct sr_dev_inst *sdi, uint8_t *buffer)
+{
+	struct dev_context *devc = sdi->priv;
+	uint32_t version;
+	int err, i;
+
+	if (buffer[0] != 0xaa || buffer[1] != 0x55) {
+		sr_err("bad flash header");
+		return SR_ERR;
+	}
+
+	version = buffer[2] | (buffer[3] << 8) | (buffer[4] << 16) | (buffer[5] << 24);
+	if (version != 2) {
+		sr_err("bad flash version %d", version);
+		return SR_ERR;
+	}
+
+	memcpy(devc->calibration_data, buffer + 6, sizeof(devc->calibration_data));
+	uint16_t *bb = buffer + 6;
+	for (int z = 0; z < 3; z++) {
+		for (int y = 0; y < 2; y++) {
+			for (int x = 0; x < 10; x++) {
+				printf("%02x ", *bb++);
+			}
+			printf("\n");
+		}
+	}
+
+	return SR_OK;
+}
+
 SR_PRIV int vds_open(struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc = sdi->priv;
@@ -186,8 +228,10 @@ SR_PRIV int vds_open(struct sr_dev_inst *sdi)
 	struct sr_usb_dev_inst *usb = sdi->conn;
 	struct libusb_device_descriptor des;
 	libusb_device **devlist;
-	int err, i;
+	int err, i, tmp;
 	char connection_id[64];
+	uint8_t buffer[2];
+	uint8_t *flash_buffer = NULL;
 	uint32_t response;
 
 	libusb_get_device_list(drvc->sr_ctx->libusb_ctx, &devlist);
@@ -212,51 +256,59 @@ SR_PRIV int vds_open(struct sr_dev_inst *sdi)
 		}
 
 		if (!(err = libusb_open(devlist[i], &usb->devhdl))) {
-/*			if (usb->address == 0xff)*/
-				/*
-				 * first time we touch this device after firmware upload,
-				 * so we don't know the address yet.
-				 */
-/*				usb->address = libusb_get_device_address(devlist[i]);*/
-
-
-			/*if (!(devc->epin_maxpacketsize = dso_getmps(devlist[i])))
-				sr_err("Wrong endpoint profile.");
-			else*/
-
-			err = vds_packed_cmd(sdi, 0x4001, "\x56", 1);
-			if (!err)
-				err = vds_get_response(sdi, 'V', &response);
+			buffer[0] = 0x56;
+			err = vds_packed_cmd_response(sdi, 0x4001, buffer, 1, 'V', &response);
 			if (response != 0x1) {
 				// VDS 1022
 				sr_err("Wrong machine type %08x", response);
 				err = SR_ERR;
+				break;
 			}
 
-			if (!err)
-				err = vds_packed_cmd(sdi, 0x223, "", 1);
-			if (!err)
-				err = vds_get_response(sdi, 'E', &response);
+			buffer[0] = 0x0;
+			err = vds_packed_cmd_response(sdi, 0x223, buffer, 1, 'E', &response);
 
 			if (err) {
 				sr_err("Failure during initial handshake");
-			} else {
-				if (response == 0) {
-					sr_dbg("Need to upload firmware");
+				break;
+			}
 
-					err = vds_upload_firmware(sdi);
+			if (response == 0) {
+				sr_dbg("Need to upload firmware");
+
+				err = vds_upload_firmware(sdi);
+
+				if (err) {
+					sr_err("Failed to upload firmware");
+					break;
 				}
 			}
 
-			if (err) {
-				sr_err("Failed to upload firmware");
-			} else {
-				sdi->status = SR_ST_ACTIVE;
-				sr_info("Opened device on %d.%d (logical) / "
-						"%s (physical) interface %d.",
-					usb->bus, usb->address,
-					sdi->connection_id, USB_INTERFACE);
+			buffer[0] = 0x0;
+			err = vds_packed_cmd(sdi, 0x1b0, buffer, 1);
+
+			if (!err) {
+				flash_buffer = g_malloc(2002);
+
+				err = libusb_bulk_transfer(usb->devhdl, VDS_EP_IN, flash_buffer, 2002, &tmp, VDS_USB_TIMEOUT);
 			}
+
+			if (!err) {
+				err = vds_parse_flash(sdi, flash_buffer);
+			}
+
+			g_free(flash_buffer);
+
+			if (err) {
+				sr_err("Failed to read flash contents");
+				break;
+			}
+
+			sdi->status = SR_ST_ACTIVE;
+			sr_info("Opened device on %d.%d (logical) / "
+					"%s (physical) interface %d.",
+				usb->bus, usb->address,
+				sdi->connection_id, USB_INTERFACE);
 		} else {
 			sr_err("Failed to open device: %s.",
 			       libusb_error_name(err));
@@ -292,33 +344,18 @@ SR_PRIV void vds_close(struct sr_dev_inst *sdi)
 
 SR_PRIV int vds_init(struct sr_dev_inst *sdi)
 {
+	(void)sdi;
+
 	return SR_OK;
 }
 
 SR_PRIV int vds_capture_start(struct sr_dev_inst *sdi)
 {
+	struct dev_context *devc = sdi->priv;
 	int err = 0;
-	char buffer[4];
+	uint8_t buffer[4];
 	uint32_t response;
-
-	// zero_off_ch1
-	/*make_int16(buffer, 0x1c8);
-	if (!err)
-		err = vds_packed_cmd(sdi, 0x10a, buffer, 2);
-	if (!err)
-		err = vds_get_response(sdi, 'S', &response);*/
-
-	// edge_level_ch1 (TODO: number of bits is unclear)
-	/*buffer[0] = 0x32;
-	if (!err)
-		err = vds_packed_cmd(sdi, 0x2e, buffer, 1);
-	if (!err)
-		err = vds_get_response(sdi, 'S', &response);
-	buffer[0] = 0x28;
-	if (!err)
-		err = vds_packed_cmd(sdi, 0x2e + 1, buffer, 1);
-	if (!err)
-		err = vds_get_response(sdi, 'S', &response);*/
+	uint16_t tmp;
 
 	// phase_fine
 	buffer[0] = 0;
@@ -357,11 +394,15 @@ SR_PRIV int vds_capture_start(struct sr_dev_inst *sdi)
 	// TODO: here?
 
 	// volt_gain_ch1
-	make_int16(buffer, 0x223);
+	tmp = devc->calibration_data[GAIN][0][devc->voltage[0]];
+        make_int16(buffer, tmp);
 	err |= vds_packed_cmd_response(sdi, 0x116, buffer, 2, 'S', &response);
 
 	// zero_off_ch1
-	make_int16(buffer, 0x1c8);
+	// TODO: 50 should be adjustable
+	tmp = devc->calibration_data[COMPENSATION][0][devc->voltage[0]];
+	tmp = tmp - (50 * devc->calibration_data[AMPLITUDE][0][devc->voltage[0]] / 100);
+	make_int16(buffer, tmp);
 	err |= vds_packed_cmd_response(sdi, 0x10a, buffer, 2, 'S', &response);
 
 	// sample
@@ -384,8 +425,6 @@ SR_PRIV int vds_capture_start(struct sr_dev_inst *sdi)
 	buffer[0] = 0;
 	err |= vds_packed_cmd_response(sdi, 0xa, buffer, 1, 'S', &response);
 
-	// FIXME: pre/suf
-
 	// pre_trg
 	buffer[0] = 0xf1;
 	err |= vds_packed_cmd_response(sdi, 0x5a, buffer, 1, 'S', &response);
@@ -406,20 +445,13 @@ SR_PRIV int vds_capture_start(struct sr_dev_inst *sdi)
 	buffer[0] = 1;
 	err |= vds_packed_cmd_response(sdi, 0x10c, buffer, 1, 'S', &response);
 
-	// wtf
-	/*buffer[0] = 1;
-	if (!err)
-		err = vds_packed_cmd(sdi, 0x224, buffer, 1);
-	if (!err)
-		err = vds_get_response(sdi, 'S', &response);*/
-
 	return err;
 }
 
 SR_PRIV int vds_get_data_ready(const struct sr_dev_inst *sdi)
 {
 	uint32_t response;
-	char buffer[2];
+	uint8_t buffer[2];
 	int err = 0;
 
 	// trg_d
@@ -439,12 +471,10 @@ SR_PRIV int vds_get_data_ready(const struct sr_dev_inst *sdi)
 
 SR_PRIV int vds_get_data(const struct sr_dev_inst *sdi, libusb_transfer_cb_fn cb)
 {
-	struct dev_context *devc = sdi->priv;
 	struct sr_usb_dev_inst *usb = sdi->conn;
 	int err = 0;
 	int i;
-	char buffer[2];
-	uint32_t response;
+	uint8_t buffer[2];
 	uint8_t *data_buf;
 	struct libusb_transfer *transfer;
 
