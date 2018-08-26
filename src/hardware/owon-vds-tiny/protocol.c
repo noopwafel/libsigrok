@@ -56,8 +56,11 @@ static int send_bulkcmd(const struct sr_dev_inst *sdi, uint8_t *buffer, int bufl
 	printf("\n");
 #endif
 
-	if ((ret = libusb_bulk_transfer(usb->devhdl, VDS_EP_OUT, buffer, buflen, &tmp, VDS_USB_TIMEOUT)) != 0)
+	if ((ret = libusb_bulk_transfer(usb->devhdl, VDS_EP_OUT, buffer, buflen, &tmp, VDS_USB_TIMEOUT)) != 0) {
+		sr_err("Failed to send command: %s.",
+		       libusb_error_name(ret));
 		return SR_ERR;
+	}
 
 	return SR_OK;
 }
@@ -69,8 +72,11 @@ static int recv_bulkcmd(const struct sr_dev_inst *sdi, uint8_t *buffer, int bufl
 
 	usb = sdi->conn;
 
-	if ((ret = libusb_bulk_transfer(usb->devhdl, VDS_EP_IN, buffer, buflen, &tmp, VDS_USB_TIMEOUT)) != 0)
+	if ((ret = libusb_bulk_transfer(usb->devhdl, VDS_EP_IN, buffer, buflen, &tmp, VDS_USB_TIMEOUT)) != 0) {
+		sr_err("Failed to receive command: %s.",
+		       libusb_error_name(ret));
 		return SR_ERR;
+	}
 
 #ifdef VDS_DUMP_OUTPUT
 	printf("in: ");
@@ -444,6 +450,9 @@ SR_PRIV int vds_capture_start(struct sr_dev_inst *sdi)
 	// edge_level_ext (again)
 	buffer[0] = 1;
 	err |= vds_packed_cmd_response(sdi, 0x10c, buffer, 1, 'S', &response);
+
+	if (err != SR_OK)
+		sr_err("capture start failed");
 
 	return err;
 }

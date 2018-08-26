@@ -394,17 +394,24 @@ static void LIBUSB_CALL receive_transfer(struct libusb_transfer *transfer)
 
 	/* TODO: Check malloc return value. */
 	analog.data = g_try_malloc(num_samples * sizeof(float));
-	//analog.meaning->channels = g_slist_append(NULL, channels->data);
+
+	// TODO: how does this calculation work :(
+	float range = ((float)vdivs[devc->voltage[channel]][0] / vdivs[devc->voltage[channel]][1]) * 255;
+	float vdivlog = log10f(range / 255);
+	int digits = -(int)vdivlog + (vdivlog < 0.0);
+	analog.encoding->digits = digits;
+	analog.spec->spec_digits = digits;
 	analog.meaning->channels = g_slist_append(NULL, g_slist_nth_data(sdi->channels, channel));
 
 	// the layout is [11 bytes header] + [100 bytes trigger buffer] + [50 bytes pre] + [1000 bytes payload] + [50 bytes post]
 	// the pre/payload/post seems to all be valid data
 	// owon use only the payload, offset by 1 point, looks like they're trying to avoid some problem when triggering on square waves (sometimes you get a bad sample (or even two) at the start of the pre), idk
 
-	uint8_t *data_in = transfer->buffer + 11 + 100 + 1;
+	int8_t *data_in = (int8_t *)transfer->buffer + 11 + 100 + 1;
 	for (int i = 0; i < num_samples; i++) {
-		//((float *)analog.data)[i] = range / 255 * *(data_in + i) - range / 2;
-		((float *)analog.data)[i] = *(data_in + i);
+#define ZEROOFF_HACK 50 // also in protocol.c :/
+		((float *)analog.data)[i] = range / 255 * ((float)*(data_in + i) - ZEROOFF_HACK);
+		//((float *)analog.data)[i] = *(data_in + i);
 	}
 
 	sr_session_send(sdi, &packet);
